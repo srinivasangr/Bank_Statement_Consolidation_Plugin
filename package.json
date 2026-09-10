@@ -5,7 +5,9 @@
   "type": "module",
   "description": "Local MCP service that consolidates bank statements into a template-driven Excel workbook.",
   "license": "MIT",
-  "engines": { "node": ">=20" },
+  "engines": {
+    "node": ">=20"
+  },
   "scripts": {
     "build": "tsc -p tsconfig.json",
     "check": "tsc -p tsconfig.json --noEmit",
@@ -18,6 +20,7 @@
   "dependencies": {
     "@modelcontextprotocol/server": "^2.0.0",
     "exceljs": "^4.4.0",
+    "pdfjs-dist": "^4.10.38",
     "zod": "^4.1.0"
   },
   "devDependencies": {

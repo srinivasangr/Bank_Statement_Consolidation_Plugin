@@ -1,0 +1,58 @@
+%PDF-1.4
+1 0 obj
+<< /Type /Catalog /Pages 2 0 R >>
+endobj
+2 0 obj
+<< /Type /Pages /Kids [3 0 R] /Count 1 >>
+endobj
+3 0 obj
+<< /Type /Page /Parent 2 0 R /MediaBox [0 0 612 792] /Resources << /Font << /F1 4 0 R >> >> /Contents 5 0 R >>
+endobj
+4 0 obj
+<< /Type /Font /Subtype /Type1 /BaseFont /Helvetica /Encoding /WinAnsiEncoding >>
+endobj
+5 0 obj
+<< /Length 1200 >>
+stream
+BT /F1 14 Tf 56 742 Td (Northwind Bank - Statement of Account) Tj ET
+BT /F1 9 Tf 56 726 Td (Account XXXX4417   Period 01 Sep 2026 to 30 Sep 2026) Tj ET
+BT /F1 10 Tf 56 690 Td (Date) Tj ET
+BT /F1 10 Tf 150 690 Td (Description) Tj ET
+BT /F1 10 Tf 380 690 Td (Withdrawal) Tj ET
+BT /F1 10 Tf 460 690 Td (Deposit) Tj ET
+BT /F1 10 Tf 540 690 Td (Balance) Tj ET
+BT /F1 9 Tf 56 668 Td (2026-09-11) Tj ET
+BT /F1 9 Tf 150 668 Td (AMAZON MARKETPLACE) Tj ET
+BT /F1 9 Tf 380 668 Td (64.30) Tj ET
+BT /F1 9 Tf 540 668 Td (3,120.55) Tj ET
+BT /F1 9 Tf 56 646 Td (2026-09-12) Tj ET
+BT /F1 9 Tf 150 646 Td (UBER TRIP 8842) Tj ET
+BT /F1 9 Tf 380 646 Td (23.75) Tj ET
+BT /F1 9 Tf 540 646 Td (3,096.80) Tj ET
+BT /F1 9 Tf 56 624 Td (2026-09-15) Tj ET
+BT /F1 9 Tf 150 624 Td (CLIENT PAYMENT INV 5013) Tj ET
+BT /F1 9 Tf 460 624 Td (2,400.00) Tj ET
+BT /F1 9 Tf 540 624 Td (5,496.80) Tj ET
+BT /F1 9 Tf 56 602 Td (2026-09-18) Tj ET
+BT /F1 9 Tf 150 602 Td (PAYROLL SEPTEMBER) Tj ET
+BT /F1 9 Tf 380 602 Td (1,910.00) Tj ET
+BT /F1 9 Tf 540 602 Td (3,586.80) Tj ET
+BT /F1 9 Tf 56 580 Td (2026-09-21) Tj ET
+BT /F1 9 Tf 150 580 Td (CITY WATER UTILITY) Tj ET
+BT /F1 9 Tf 380 580 Td (88.40) Tj ET
+BT /F1 9 Tf 540 580 Td (3,498.40) Tj ET
+endstream
+endobj
+xref
+0 6
+0000000000 65535 f 
+0000000009 00000 n 
+0000000058 00000 n 
+0000000115 00000 n 
+0000000241 00000 n 
+0000000338 00000 n 
+trailer
+<< /Size 6 /Root 1 0 R >>
+startxref
+1590
+%%EOF

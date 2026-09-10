@@ -1,51 +1,115 @@
 # Bank Statement Consolidator
 
-A Codex plugin that turns a set of bank statements and an editable Excel workbook into a reconciled, consolidated workbook. Everything runs locally over stdio: the service never uploads a statement.
+A Codex plugin that turns a pile of bank statements — PDF, CSV, Excel, or OFX — into one reconciled Excel workbook. Everything runs locally over stdio: the service never uploads a statement.
 
-The point of the design is that a non-technical user controls the output by editing the workbook, not by changing code. Categories, reporting groups, and which reports get built all come from sheets in the template.
+The design goal is that a non-technical user controls the output by editing a workbook or by asking in plain English, never by changing code.
+
+## What the interface actually is
+
+There is no window and no upload button. This is a Codex plugin, so the interface is a conversation:
+
+- **You talk to Codex.** The bundled `statement-consolidation` skill teaches it the workflow and the safety rules.
+- **Codex calls the tools.** Five local MCP tools do the real work on files on your disk.
+- **Files go in and out by path.** Codex already runs on your machine, so "uploading" is just telling it where the statements are.
+
+A session looks like this:
+
+> **You:** Consolidate the statements in `C:\Clients\Acme\2026-09` using `C:\Clients\Acme\Acme-Master.xlsx`. Write the result to `C:\Clients\Acme\Acme-2026-09.xlsx`.
+>
+> **Codex:** Read 4 files. Appended 212 transactions, skipped 6 duplicates. 3 rows are uncategorized and 41 came from a PDF text layer — check those against the statement totals. Audit sheet has the detail.
+>
+> **You:** Anything with STRIPE is revenue. Redo it.
+>
+> **Codex:** *(adds the rule, re-runs the import)* STRIPE rows are now Revenue. 0 uncategorized.
 
 ## Install
 
 Requires Node.js 20 or later.
 
 ```bash
-npm install
+npm install     # also builds dist/, which the plugin runs
 ```
 
-`npm install` runs the build automatically and produces `dist/`, which `.mcp.json` starts.
+Then register and install it with Codex. The plugin folder must sit inside a marketplace root as `<root>/plugins/<plugin-name>`:
 
-## Quick start
+```bash
+codex plugin marketplace add <root>          # once, for a local marketplace
+codex plugin add bank-statement-consolidator@<marketplace-name>
+codex plugin list                            # confirm: installed, enabled
+```
 
-1. Copy `assets/BankStatementTemplate.xlsx` and open your copy. The `Start Here` sheet explains the rest.
-2. Edit the shaded sheets so they match your client: `Template Columns`, `Category Rules`, `Report Setup`.
-3. Give Codex the workbook and the statement files, and ask: `Consolidate these statements using this template.`
-4. Read the `Audit` sheet before you use the output.
+Codex copies the whole folder into its plugin cache, `node_modules` and `dist` included, so **run `npm install` before installing the plugin** — otherwise the cached copy has nothing to run. After changing the code, rebuild and re-add the plugin, then start a **new Codex thread** so the updated tools and skill are picked up.
 
-## How the workbook works
+## Testing without Codex
 
-| Sheet | Who fills it | Purpose |
+`npm test` drives the real MCP service over stdio and asserts on the workbooks it produces — 36 checks covering all five tools, all four input formats, rule matching, report contents, duplicate handling, and refusal of bad input. This is the fast loop; use it for anything that isn't about how Codex phrases things.
+
+```bash
+npm run check           # typecheck
+npm run build           # compile src/ to dist/
+npm test                # end-to-end against the real service
+npm run build:template  # regenerate assets/BankStatementTemplate.xlsx
+npm run verify:template # confirm the shipped template is readable and complete
+```
+
+## Getting statements in
+
+Point at files, or at a folder:
+
+```text
+statementPaths: ["C:\\Clients\\Acme\\2026-09"]                    # every statement in the folder
+statementPaths: ["C:\\...\\sept.pdf", "C:\\...\\amex.csv"]        # specific files
+```
+
+A folder expands to the statement files directly inside it (not subfolders). Recognised extensions: `.pdf`, `.csv`, `.xlsx`, `.xls`, `.ofx`, `.qfx`.
+
+| Format | How it is read | Trust level |
 | --- | --- | --- |
-| `Start Here` | — | Plain-language instructions. |
-| `Template Columns` | You | Documents what each master column means. Reference for humans. |
-| `Category Rules` | You | Rules that assign Category, Subcategory, and P&L group. |
-| `Report Setup` | You | Controls which reports are built, and how each one groups and measures. |
-| `Master Transactions` | Service | The source of truth. Rows are appended, never rewritten or deleted. |
-| `Debit statement` | Service | Rebuilt from the master table on every import. |
-| `P&L statement` | Service | Rebuilt from the master table on every import. |
-| `Consolidated statement` | Service | Rebuilt from the master table on every import. |
-| `Audit` | Service | Counts, reconciliation, and every exception. Terminal — nothing reads from it. |
+| OFX / QFX | Tagged fields, exact | `Parsed` |
+| CSV | Header matched by name | `Parsed` |
+| XLSX / XLS | First worksheet, header matched by name | `Parsed` |
+| PDF with a text layer | Text positions clustered into rows and columns | `Parsed (PDF text layer)` — verify against statement totals |
+| Scanned / image-only PDF | Not machine-readable. Codex reads it and posts rows via `bank_statement_add_transactions` | `Parsed (assistant-extracted)` — verify every row |
 
-Sheets are found by these exact names. `Master Transactions` must keep its fourteen columns in order: Transaction date, Description, Debit, Credit, Amount, Currency, Account ID, Source file, Source row, Category, Subcategory, P&L group, Transaction fingerprint, Parse status.
+Every row records how it was read, so the Audit sheet can tell you exactly how much of the output is machine-certain. Nothing is silently upgraded from one level to another. **No OCR is bundled** — a scan goes down the assistant-extracted path, or you supply a text export.
+
+## Getting the output out
+
+The result is a new `.xlsx` at the `outputPath` you name. The input workbook is never modified — the tool refuses if `outputPath` equals `templatePath`.
+
+Because the output workbook contains all nine sheets plus the accumulated master table, **it is itself a valid template**. That is the intended monthly rhythm:
+
+```text
+Acme-Master.xlsx  + September statements  ->  Acme-2026-09.xlsx
+Acme-2026-09.xlsx + October statements    ->  Acme-2026-10.xlsx   (running ledger, duplicates skipped)
+```
+
+Sharing and storage are yours to choose — the plugin only writes a file. Write the output straight into a OneDrive, SharePoint, Dropbox, or Google Drive folder and it syncs and shares like any other workbook. Keep the input statements outside your source repository.
+
+## Changing the template
+
+Two paths, same workbook. Use whichever suits the moment.
+
+**In Excel.** Open the workbook and edit the shaded cells. `Category Rules`, `Report Setup`, and the value columns are dropdown-validated, so a non-technical user cannot enter a value the service will reject.
+
+**By asking Codex.** `bank_statement_update_template` edits the same sheets from a request:
+
+> "Add a rule: anything containing STRIPE is Revenue / Card settlements, P&L group Revenue."
+> "Group the consolidated statement by P&L group instead of Category."
+> "Turn off the debit statement for this client."
+> "Drop the UBER rule."
+
+Values are validated against the same vocabulary the dropdowns offer; an unrecognised value is rejected rather than written. Rules apply at import time, so after changing them re-run the consolidation to reclassify existing rows.
 
 ### Category Rules
 
-Active rules are applied from the lowest `Priority` number upward, and the first match wins. If two active rules at the *same* priority both match, that is an exception: the row keeps `Uncategorized` and is flagged for review rather than being assigned arbitrarily.
+Active rules apply from the lowest `Priority` upward and the first match wins. Two active rules at the *same* priority that both match are an exception: the row stays `Uncategorized` and is flagged, rather than being assigned arbitrarily.
 
-`Match type` accepts `contains`, `equals`, `starts_with`, `regex`, and `amount_range` (written as `low..high`). `Look in this field` accepts `Description` or `Amount`. `Use this rule?` accepts `Yes` or `No`. All of these are dropdowns in the shipped template.
+`Match type` accepts `contains`, `equals`, `starts_with`, `regex`, and `amount_range` (as `low..high`). `Look in this field` accepts `Description` or `Amount`.
 
 ### Report Setup
 
-Each row refreshes the sheet whose name matches `Report name`. The other columns accept a fixed vocabulary, offered as dropdowns:
+Each row refreshes the sheet whose name matches `Report name`:
 
 | Column | Accepted values |
 | --- | --- |
@@ -54,46 +118,42 @@ Each row refreshes the sheet whose name matches `Report name`. The other columns
 | `Measure` | `Sum of Amount`, `Sum of Debit`, `Sum of Credit`, `Count of transactions` |
 | `Show this report?` | `Yes`, `No` |
 
-A value outside this list is not guessed at. The report is skipped and the reason is written to `Audit`.
+A value outside these lists is not guessed at — the report is skipped and the reason written to `Audit`.
 
-## Tools
+## The workbook
 
-- `bank_statement_create_template` — writes a fresh template workbook to a path you choose.
-- `bank_statement_inspect_template` — checks a workbook for the required sheets, the master columns, at least one active rule, and any unrecognised `Report Setup` values.
-- `bank_statement_consolidate` — reads the statements, applies the rules, appends only non-duplicate rows, rebuilds the enabled reports from the whole master table, and writes the audit.
+| Sheet | Who fills it | Purpose |
+| --- | --- | --- |
+| `Start Here` | — | Plain-language instructions. |
+| `Template Columns` | You | Documents what each master column means. |
+| `Category Rules` | You | Assigns Category, Subcategory, and P&L group. |
+| `Report Setup` | You | Controls which reports are built, and how. |
+| `Master Transactions` | Service | Source of truth. Appended to, never rewritten. |
+| `Debit statement` | Service | Rebuilt from the master table on every import. |
+| `P&L statement` | Service | Rebuilt from the master table on every import. |
+| `Consolidated statement` | Service | Rebuilt from the master table on every import. |
+| `Audit` | Service | Counts, provenance, and every exception. Terminal — nothing reads from it. |
 
 ## Duplicate handling
 
-Every row gets a SHA-256 `Transaction fingerprint` over account, date, amount, currency, description, source file, and source row. On import, a row is skipped if its fingerprint already exists in `Master Transactions` or appeared earlier in the same import. Re-running the same statements against the output appends nothing.
+Every row carries a SHA-256 `Transaction fingerprint` over account, date, amount, currency, description, source file, and source row. A row is skipped if that fingerprint already exists in `Master Transactions` or appeared earlier in the same import. Re-running the same statements appends nothing.
 
-## Supported inputs and limits
+## Limits
 
-CSV, XLSX/XLS, and OFX/QFX are read automatically. Header names are matched flexibly, so `Narration`, `Particulars`, `Withdrawal`, and `Deposit` are understood alongside the obvious ones.
-
-PDFs are **not** parsed by this service. A text or scanned PDF needs Codex to extract it for review, or a bank-specific parser/OCR adapter. A statement the service cannot read becomes an exception on the `Audit` sheet; it never becomes a silent gap in the numbers.
-
-Statement layouts vary by institution and period. Do not use unreviewed output for tax filings, payments, or regulated reporting.
+Statement layouts vary by institution and period. PDF column detection depends on the header row being present and the text layer being sane; a heavily styled or multi-column statement can still confuse it, which is why PDF rows are marked for verification. Do not use unreviewed output for tax filings, payments, or regulated reporting.
 
 ## Development
 
-```bash
-npm run check           # typecheck
-npm run build           # compile src/ to dist/
-npm test                # end-to-end test against the real MCP service over stdio
-npm run build:template  # regenerate assets/BankStatementTemplate.xlsx
-npm run verify:template # confirm the shipped template is readable and complete
-```
+The shipped template is generated by the same `createTemplateWorkbook()` that `bank_statement_create_template` calls, so the asset and a freshly created workbook cannot drift apart. Regenerate and re-verify after any change to `src/template.ts`.
 
-The shipped template is generated by the same `createTemplateWorkbook()` that `bank_statement_create_template` calls, so the asset and a freshly created workbook cannot drift apart. Regenerate and re-verify it after any change to `src/template.ts`.
-
-Test fixtures are synthetic. `.gitignore` blocks `*.csv`, `*.xlsx`, `*.pdf`, `*.ofx`, and `*.qfx` by default and allowlists only the template and the fixtures, so a real statement cannot be committed by accident.
+Test fixtures are synthetic. `.gitignore` blocks `*.pdf`, `*.csv`, `*.xlsx`, `*.ofx`, and `*.qfx` by default and allowlists only the template and the fixtures, so a real statement cannot be committed by accident.
 
 ## Before distributing outside a trusted team
 
 1. Add public privacy-policy and terms URLs to `.codex-plugin/plugin.json`.
 2. Add fixtures for each institution and layout you intend to support. Synthetic or irreversibly redacted statements only.
-3. Add a parser/OCR service if you need dependable PDF extraction. Keep documents local, or document any processor you use.
-4. Validate the plugin and test it in a fresh Codex task before publishing it to a marketplace or team channel.
+3. Add an OCR path if you need dependable scanned-PDF extraction without a human in the loop.
+4. Validate the plugin and test it in a fresh Codex thread before publishing.
 
 ## License
 

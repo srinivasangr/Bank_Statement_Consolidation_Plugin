@@ -1,11 +1,12 @@
 import { createHash } from "node:crypto";
-import { existsSync } from "node:fs";
-import { readFile } from "node:fs/promises";
-import { basename, extname, resolve } from "node:path";
+import { existsSync, statSync } from "node:fs";
+import { readdir, readFile } from "node:fs/promises";
+import { basename, extname, join, resolve } from "node:path";
 import ExcelJS from "exceljs";
 import { McpServer } from "@modelcontextprotocol/server";
 import { StdioServerTransport } from "@modelcontextprotocol/server/stdio";
 import * as z from "zod/v4";
+import { extractPdfTable } from "./pdf.js";
 import { createTemplateWorkbook, FINGERPRINT_COLUMN, MASTER_COLUMNS, SHEET_NAMES } from "./template.js";
 
 type Transaction = {
@@ -45,6 +46,19 @@ type ReportSetup = {
 };
 
 const server = new McpServer({ name: "bank-statement-consolidator", version: "0.1.0" });
+
+const STATEMENT_EXTENSIONS = [".csv", ".xlsx", ".xls", ".ofx", ".qfx", ".pdf"];
+
+// Parse status carries provenance. Anything starting with "Review" is an exception
+// that a human must clear; the rest records how the row was read, because a row
+// recovered from a PDF deserves less trust than one from an OFX export.
+const STATUS_PARSED = "Parsed";
+const STATUS_PDF = "Parsed (PDF text layer)";
+const STATUS_ASSISTANT = "Parsed (assistant-extracted)";
+
+function needsReview(status: string): boolean {
+  return status.startsWith("Review");
+}
 
 function clean(value: unknown): string {
   if (value instanceof Date) return value.toISOString().slice(0, 10);
@@ -106,7 +120,7 @@ function csvRows(text: string): string[][] {
   return rows;
 }
 
-function normalizeRows(rows: string[][], sourceFile: string): Transaction[] {
+function normalizeRows(rows: string[][], sourceFile: string, parseStatus: string): Transaction[] {
   const headerAt = rows.findIndex((row) => {
     const values = row.map(normalHeader);
     return values.some((item) => ["date", "transactiondate", "valuedate", "postingdate"].includes(item))
@@ -116,27 +130,26 @@ function normalizeRows(rows: string[][], sourceFile: string): Transaction[] {
   const headers = rows[headerAt];
   const dateIndex = findColumn(headers, ["date", "transactiondate", "valuedate", "postingdate"]);
   const descriptionIndex = findColumn(headers, ["description", "narration", "details", "particulars", "memo"]);
-  const debitIndex = findColumn(headers, ["debit", "withdrawal", "withdrawals"]);
-  const creditIndex = findColumn(headers, ["credit", "deposit", "deposits"]);
+  const debitIndex = findColumn(headers, ["debit", "withdrawal", "withdrawals", "paidout", "moneyout"]);
+  const creditIndex = findColumn(headers, ["credit", "deposit", "deposits", "paidin", "moneyin"]);
   const amountIndex = findColumn(headers, ["amount", "transactionamount"]);
   const currencyIndex = findColumn(headers, ["currency", "curr"]);
   const accountIndex = findColumn(headers, ["accountid", "accountnumber", "account"]);
   if (debitIndex < 0 && creditIndex < 0 && amountIndex < 0) {
     throw new Error(`${sourceFile}: no Debit, Credit, or Amount column was found, so transaction values cannot be read.`);
   }
+  const split = debitIndex >= 0 || creditIndex >= 0;
   return rows.slice(headerAt + 1).map((row, offset) => {
     const debit = debitIndex >= 0 ? Math.abs(numberValue(row[debitIndex])) : 0;
     const credit = creditIndex >= 0 ? Math.abs(numberValue(row[creditIndex])) : 0;
     const suppliedAmount = amountIndex >= 0 ? numberValue(row[amountIndex]) : 0;
-    // A signed Amount column wins when the source has no explicit debit/credit split.
-    const amount = debitIndex >= 0 || creditIndex >= 0 ? credit - debit : suppliedAmount;
-    const derivedDebit = debitIndex >= 0 || creditIndex >= 0 ? debit : Math.max(0, -suppliedAmount);
-    const derivedCredit = debitIndex >= 0 || creditIndex >= 0 ? credit : Math.max(0, suppliedAmount);
+    // A signed Amount column is only trusted when the source has no debit/credit split.
+    const amount = split ? credit - debit : suppliedAmount;
     const partial = {
       transactionDate: clean(row[dateIndex]),
       description: clean(row[descriptionIndex]),
-      debit: derivedDebit,
-      credit: derivedCredit,
+      debit: split ? debit : Math.max(0, -suppliedAmount),
+      credit: split ? credit : Math.max(0, suppliedAmount),
       amount,
       currency: currencyIndex >= 0 ? clean(row[currencyIndex]) || "Unknown" : "Unknown",
       accountId: accountIndex >= 0 ? clean(row[accountIndex]) : "",
@@ -145,7 +158,7 @@ function normalizeRows(rows: string[][], sourceFile: string): Transaction[] {
       category: "Uncategorized",
       subcategory: "",
       pnlGroup: "",
-      parseStatus: amount === 0 && !suppliedAmount ? "Review: no debit or credit value was read" : "Parsed"
+      parseStatus: amount === 0 ? "Review: no debit or credit value was read" : parseStatus
     };
     return { ...partial, fingerprint: fingerprint(partial) };
   }).filter((row) => row.transactionDate || row.description || row.amount !== 0);
@@ -172,27 +185,47 @@ function parseOfx(text: string, sourceFile: string): Transaction[] {
       category: "Uncategorized",
       subcategory: "",
       pnlGroup: "",
-      parseStatus: "Parsed"
+      parseStatus: STATUS_PARSED
     };
     return { ...partial, fingerprint: fingerprint(partial) };
   });
 }
 
-async function parseStructuredFile(filePath: string): Promise<Transaction[]> {
+async function parseStatementFile(filePath: string): Promise<Transaction[]> {
   if (!existsSync(filePath)) throw new Error(`File does not exist: ${filePath}`);
   const extension = extname(filePath).toLowerCase();
-  if (extension === ".csv") return normalizeRows(csvRows(await readFile(filePath, "utf8")), basename(filePath));
+  const name = basename(filePath);
+  if (extension === ".csv") return normalizeRows(csvRows(await readFile(filePath, "utf8")), name, STATUS_PARSED);
   if ([".xlsx", ".xls"].includes(extension)) {
     const workbook = new ExcelJS.Workbook();
     await workbook.xlsx.readFile(filePath);
     const sheet = workbook.worksheets[0];
-    if (!sheet) throw new Error(`${basename(filePath)}: the workbook has no worksheets.`);
+    if (!sheet) throw new Error(`${name}: the workbook has no worksheets.`);
     const rows: string[][] = [];
     sheet.eachRow({ includeEmpty: false }, (row) => rows.push(excelRowValues(row)));
-    return normalizeRows(rows, basename(filePath));
+    return normalizeRows(rows, name, STATUS_PARSED);
   }
-  if ([".ofx", ".qfx"].includes(extension)) return parseOfx(await readFile(filePath, "utf8"), basename(filePath));
-  throw new Error(`${basename(filePath)}: unsupported for automatic import. Use CSV, XLSX/XLS, or OFX/QFX, or ask your assistant to extract the PDF for review.`);
+  if ([".ofx", ".qfx"].includes(extension)) return parseOfx(await readFile(filePath, "utf8"), name);
+  if (extension === ".pdf") return normalizeRows((await extractPdfTable(filePath)).rows, name, STATUS_PDF);
+  throw new Error(`${name}: unsupported file type. Use CSV, XLSX/XLS, OFX/QFX, or PDF.`);
+}
+
+/** A folder is expanded to the statement files directly inside it, so a user can point at a month's folder. */
+async function expandStatementPaths(paths: string[]): Promise<{ files: string[]; notes: string[] }> {
+  const files: string[] = [];
+  const notes: string[] = [];
+  for (const path of paths) {
+    const target = resolve(path);
+    if (!existsSync(target)) { notes.push(`Skipped - path does not exist: ${target}`); continue; }
+    if (!statSync(target).isDirectory()) { files.push(target); continue; }
+    const entries = (await readdir(target, { withFileTypes: true }))
+      .filter((entry) => entry.isFile() && STATEMENT_EXTENSIONS.includes(extname(entry.name).toLowerCase()))
+      .map((entry) => join(target, entry.name))
+      .sort();
+    if (!entries.length) notes.push(`Skipped - no statement files found in folder: ${target}`);
+    files.push(...entries);
+  }
+  return { files, notes };
 }
 
 function sheetRows(sheet: ExcelJS.Worksheet): Record<string, string>[] {
@@ -209,13 +242,41 @@ function sheetRows(sheet: ExcelJS.Worksheet): Record<string, string>[] {
 
 function getSheet(workbook: ExcelJS.Workbook, name: string): ExcelJS.Worksheet {
   const sheet = workbook.getWorksheet(name);
-  if (!sheet) throw new Error(`Template is missing the '${name}' sheet. Start from BankStatementTemplate.xlsx or add this sheet.`);
+  if (!sheet) throw new Error(`Template is missing the '${name}' sheet. Start from BankStatementTemplate.xlsx or create one with bank_statement_create_template.`);
   return sheet;
 }
 
 function isYes(value: string | undefined): boolean {
   return /^(yes|true|y|1)$/i.test((value ?? "").trim());
 }
+
+const MATCH_TYPES = ["contains", "equals", "starts_with", "regex", "amount_range"];
+const RULE_FIELDS = ["description", "amount"];
+
+const INCLUDE_FILTERS: Record<string, (row: Transaction) => boolean> = {
+  "all transactions": () => true,
+  "debit > 0": (row) => row.debit > 0,
+  "credit > 0": (row) => row.credit > 0,
+  "p&l group is not blank": (row) => Boolean(row.pnlGroup),
+  "category is not blank": (row) => Boolean(row.category)
+};
+
+const GROUP_FIELDS: Record<string, (row: Transaction) => string> = {
+  "category": (row) => row.category || "Uncategorized",
+  "subcategory": (row) => row.subcategory || "(blank)",
+  "p&l group": (row) => row.pnlGroup || "(blank)",
+  "currency": (row) => row.currency || "Unknown",
+  "account id": (row) => row.accountId || "(blank)",
+  "source file": (row) => row.sourceFile || "(blank)",
+  "transaction date": (row) => row.transactionDate || "(blank)"
+};
+
+const MEASURES: Record<string, (row: Transaction) => number> = {
+  "sum of amount": (row) => row.amount,
+  "sum of debit": (row) => row.debit,
+  "sum of credit": (row) => row.credit,
+  "count of transactions": () => 1
+};
 
 function readRules(workbook: ExcelJS.Workbook): Rule[] {
   return sheetRows(getSheet(workbook, "Category Rules")).map((row) => ({
@@ -258,31 +319,6 @@ function applyRules(row: Transaction, rules: Rule[]): Transaction {
   return { ...row, category: first.category, subcategory: first.subcategory, pnlGroup: first.pnlGroup };
 }
 
-const INCLUDE_FILTERS: Record<string, (row: Transaction) => boolean> = {
-  "all transactions": () => true,
-  "debit > 0": (row) => row.debit > 0,
-  "credit > 0": (row) => row.credit > 0,
-  "p&l group is not blank": (row) => Boolean(row.pnlGroup),
-  "category is not blank": (row) => Boolean(row.category)
-};
-
-const GROUP_FIELDS: Record<string, (row: Transaction) => string> = {
-  "category": (row) => row.category || "Uncategorized",
-  "subcategory": (row) => row.subcategory || "(blank)",
-  "p&l group": (row) => row.pnlGroup || "(blank)",
-  "currency": (row) => row.currency || "Unknown",
-  "account id": (row) => row.accountId || "(blank)",
-  "source file": (row) => row.sourceFile || "(blank)",
-  "transaction date": (row) => row.transactionDate || "(blank)"
-};
-
-const MEASURES: Record<string, (row: Transaction) => number> = {
-  "sum of amount": (row) => row.amount,
-  "sum of debit": (row) => row.debit,
-  "sum of credit": (row) => row.credit,
-  "count of transactions": () => 1
-};
-
 function readMasterRows(sheet: ExcelJS.Worksheet): Transaction[] {
   const rows: Transaction[] = [];
   sheet.eachRow({ includeEmpty: false }, (row, rowNumber) => {
@@ -293,7 +329,7 @@ function readMasterRows(sheet: ExcelJS.Worksheet): Transaction[] {
       debit: numberValue(row.getCell(3).value), credit: numberValue(row.getCell(4).value), amount: numberValue(row.getCell(5).value),
       currency: at(6) || "Unknown", accountId: at(7), sourceFile: at(8), sourceRow: at(9),
       category: at(10) || "Uncategorized", subcategory: at(11), pnlGroup: at(12),
-      fingerprint: at(FINGERPRINT_COLUMN), parseStatus: at(14) || "Parsed"
+      fingerprint: at(FINGERPRINT_COLUMN), parseStatus: at(14) || STATUS_PARSED
     };
     if (record.fingerprint || record.description || record.transactionDate) rows.push(record);
   });
@@ -308,15 +344,23 @@ function writeMasterRow(sheet: ExcelJS.Worksheet, transaction: Transaction): voi
   ]);
 }
 
-function buildReport(sheet: ExcelJS.Worksheet, setup: ReportSetup, rows: Transaction[]): number {
+/**
+ * Empties a sheet before it is rewritten. ExcelJS ignores spliceRows(1, rowCount)
+ * on a sheet loaded from a file — the rows survive and new content lands beneath
+ * the old, so report sheets have to be cleared one row at a time from the bottom.
+ */
+function clearSheet(sheet: ExcelJS.Worksheet): void {
+  for (let rowNumber = sheet.rowCount; rowNumber >= 1; rowNumber -= 1) sheet.spliceRows(rowNumber, 1);
+}
+
+function buildReport(sheet: ExcelJS.Worksheet, setup: ReportSetup, rows: Transaction[]): void {
   const include = INCLUDE_FILTERS[setup.includeWhen];
   const groupBy = GROUP_FIELDS[setup.groupBy];
   const measure = MEASURES[setup.measure];
-  const selected = rows.filter(include);
   const groups = new Map<string, number>();
-  selected.forEach((row) => groups.set(groupBy(row), (groups.get(groupBy(row)) ?? 0) + measure(row)));
+  rows.filter(include).forEach((row) => groups.set(groupBy(row), (groups.get(groupBy(row)) ?? 0) + measure(row)));
 
-  sheet.spliceRows(1, sheet.rowCount);
+  clearSheet(sheet);
   sheet.addRow([setup.name]).font = { name: "Arial", size: 14, bold: true, color: { argb: "FF12302E" } };
   sheet.addRow([`Includes: ${setup.includeWhen}. Grouped by: ${setup.groupBy}. Measure: ${setup.measure}.`]).font = { name: "Arial", size: 9, italic: true };
   sheet.addRow([]);
@@ -331,24 +375,83 @@ function buildReport(sheet: ExcelJS.Worksheet, setup: ReportSetup, rows: Transac
   sheet.getColumn(2).width = 18;
   sheet.getColumn(2).numFmt = setup.measure === "count of transactions" ? "#,##0" : "#,##0.00;(#,##0.00);-";
   sheet.views = [{ showGridLines: false }];
-  return selected.length;
 }
 
 function writeAudit(sheet: ExcelJS.Worksheet, lines: [string, string | number][], exceptions: string[]): void {
-  sheet.spliceRows(1, sheet.rowCount);
+  clearSheet(sheet);
   sheet.addRow(["Import audit"]).font = { name: "Arial", size: 14, bold: true, color: { argb: "FF12302E" } };
   sheet.addRow([`Generated ${new Date().toISOString()}`]).font = { name: "Arial", size: 9, italic: true };
   sheet.addRow([]);
   lines.forEach(([label, value]) => {
-    const row = sheet.addRow([label, value]);
-    row.getCell(1).font = { name: "Arial", size: 10, bold: true };
+    sheet.addRow([label, value]).getCell(1).font = { name: "Arial", size: 10, bold: true };
   });
   sheet.addRow([]);
   sheet.addRow(["Exceptions and notes"]).font = { name: "Arial", size: 11, bold: true };
   (exceptions.length ? exceptions : ["None."]).forEach((line) => sheet.addRow([line]));
-  sheet.getColumn(1).width = 62;
+  sheet.getColumn(1).width = 70;
   sheet.getColumn(2).width = 18;
   sheet.views = [{ showGridLines: false }];
+}
+
+/**
+ * The shared tail of every import: classify, deduplicate, append, refresh the
+ * enabled reports over the whole master table, and write the audit.
+ */
+function finishImport(workbook: ExcelJS.Workbook, incoming: Transaction[], exceptions: string[], sourceCount: number): { added: Transaction[]; allRows: Transaction[]; summary: string } {
+  const master = getSheet(workbook, "Master Transactions");
+  const rules = readRules(workbook);
+  const existingRows = readMasterRows(master);
+  const seen = new Set(existingRows.map((row) => row.fingerprint).filter(Boolean));
+
+  const classified = incoming.map((row) => applyRules(row, rules));
+  const added: Transaction[] = [];
+  for (const row of classified) {
+    // Deduplicates against the master table and within this import.
+    if (seen.has(row.fingerprint)) continue;
+    seen.add(row.fingerprint);
+    added.push(row);
+    writeMasterRow(master, row);
+  }
+
+  const allRows = [...existingRows, ...added];
+  for (const setup of readReportSetups(workbook)) {
+    const sheet = workbook.getWorksheet(setup.name);
+    if (!sheet) { exceptions.push(`Report "${setup.name}" has no sheet with that name, so it was skipped.`); continue; }
+    if (!setup.show) { exceptions.push(`Report "${setup.name}" is turned off in Report Setup, so it was left unchanged.`); continue; }
+    if (!INCLUDE_FILTERS[setup.includeWhen] || !GROUP_FIELDS[setup.groupBy] || !MEASURES[setup.measure]) {
+      exceptions.push(`Report "${setup.name}" uses a value this version does not understand, so it was skipped. Pick from the dropdowns in Report Setup.`);
+      continue;
+    }
+    buildReport(sheet, setup, allRows);
+  }
+
+  const review = added.filter((row) => needsReview(row.parseStatus));
+  review.forEach((row) => exceptions.push(`${row.sourceFile} row ${row.sourceRow}: ${row.parseStatus}`));
+  const uncategorized = added.filter((row) => row.category === "Uncategorized").length;
+  const fromPdf = added.filter((row) => row.parseStatus === STATUS_PDF).length;
+  const fromAssistant = added.filter((row) => row.parseStatus === STATUS_ASSISTANT).length;
+  if (fromPdf) exceptions.push(`${fromPdf} row(s) were reconstructed from a PDF text layer. Check them against the statement totals before relying on them.`);
+  if (fromAssistant) exceptions.push(`${fromAssistant} row(s) were supplied by the assistant rather than machine-parsed. Verify each one against the source document.`);
+
+  writeAudit(getSheet(workbook, "Audit"), [
+    ["Sources in this import", sourceCount],
+    ["Transactions extracted", incoming.length],
+    ["Rows appended", added.length],
+    ["Duplicates skipped", incoming.length - added.length],
+    ["Rows in master table", allRows.length],
+    ["Read from PDF text layer", fromPdf],
+    ["Supplied by assistant", fromAssistant],
+    ["Uncategorized in this import", uncategorized],
+    ["Rows needing review", review.length],
+    ["Active category rules", rules.length]
+  ], exceptions);
+
+  const summary = [
+    `Extracted ${incoming.length}; appended ${added.length}; skipped ${incoming.length - added.length} duplicate(s).`,
+    `Master table now holds ${allRows.length} transaction(s). ${uncategorized} uncategorized, ${review.length} needing review.`,
+    exceptions.length ? `${exceptions.length} note(s) on the Audit sheet. Read it before using the output.` : "No exceptions recorded."
+  ].join(" ");
+  return { added, allRows, summary };
 }
 
 server.registerTool("bank_statement_create_template", {
@@ -361,107 +464,191 @@ server.registerTool("bank_statement_create_template", {
 });
 
 server.registerTool("bank_statement_inspect_template", {
-  description: "Check that a client workbook has the sheets, master columns, and rules needed for template-driven consolidation.",
+  description: "Check that a client workbook has the sheets, master columns, category rules, and report settings needed for consolidation.",
   inputSchema: z.object({ templatePath: z.string().describe("Absolute path to the client template workbook.") })
 }, async ({ templatePath }) => {
   const workbook = new ExcelJS.Workbook();
   await workbook.xlsx.readFile(resolve(templatePath));
   const missingSheets = SHEET_NAMES.filter((name) => !workbook.getWorksheet(name));
-  if (missingSheets.length) {
-    return { content: [{ type: "text", text: `Template needs these sheets: ${missingSheets.join(", ")}` }] };
-  }
+  if (missingSheets.length) return { content: [{ type: "text", text: `Template needs these sheets: ${missingSheets.join(", ")}` }] };
+
   const headers = excelRowValues(getSheet(workbook, "Master Transactions").getRow(1)).map(normalHeader);
   const missingColumns = MASTER_COLUMNS.filter((column) => !headers.includes(normalHeader(column)));
   const rules = readRules(workbook);
   const reports = readReportSetups(workbook);
-  const unknown = reports.filter((setup) => setup.show).flatMap((setup) => [
-    ...(INCLUDE_FILTERS[setup.includeWhen] ? [] : [`${setup.name}: unknown "Include transactions when" value "${setup.includeWhen}"`]),
-    ...(GROUP_FIELDS[setup.groupBy] ? [] : [`${setup.name}: unknown "Group by" value "${setup.groupBy}"`]),
-    ...(MEASURES[setup.measure] ? [] : [`${setup.name}: unknown "Measure" value "${setup.measure}"`])
-  ]);
   const problems = [
     ...(missingColumns.length ? [`Master Transactions is missing: ${missingColumns.join(", ")}`] : []),
     ...(rules.length ? [] : ["Category Rules has no active rule, so every transaction will be Uncategorized."]),
-    ...unknown
+    ...reports.filter((setup) => setup.show).flatMap((setup) => [
+      ...(INCLUDE_FILTERS[setup.includeWhen] ? [] : [`${setup.name}: unknown "Include transactions when" value "${setup.includeWhen}"`]),
+      ...(GROUP_FIELDS[setup.groupBy] ? [] : [`${setup.name}: unknown "Group by" value "${setup.groupBy}"`]),
+      ...(MEASURES[setup.measure] ? [] : [`${setup.name}: unknown "Measure" value "${setup.measure}"`])
+    ]),
+    ...reports.filter((setup) => setup.show && !workbook.getWorksheet(setup.name)).map((setup) => `Report "${setup.name}" has no sheet with that name.`)
   ];
-  const summary = `Sheets present. ${rules.length} active category rule(s), ${reports.filter((setup) => setup.show).length} report(s) turned on.`;
-  return { content: [{ type: "text", text: problems.length ? `${summary}\nNeeds attention:\n- ${problems.join("\n- ")}` : `${summary} Template is ready for structured statement consolidation.` }] };
+  const summary = `Sheets present. ${rules.length} active category rule(s), ${reports.filter((setup) => setup.show).length} report(s) turned on. Master table holds ${Math.max(0, getSheet(workbook, "Master Transactions").rowCount - 1)} transaction(s).`;
+  return { content: [{ type: "text", text: problems.length ? `${summary}\nNeeds attention:\n- ${problems.join("\n- ")}` : `${summary} Template is ready for consolidation.` }] };
 });
 
 server.registerTool("bank_statement_consolidate", {
-  description: "Read CSV, XLSX/XLS, or OFX/QFX statements, apply the workbook's category rules, append non-duplicate transactions to the master table, refresh the reports named in Report Setup, and save a consolidated workbook.",
+  description: "Read CSV, XLSX/XLS, OFX/QFX, and text-layer PDF statements (files or a folder of them), apply the workbook's category rules, append non-duplicate transactions, refresh the reports named in Report Setup, and save a consolidated workbook.",
   inputSchema: z.object({
-    templatePath: z.string().describe("Absolute path to the client template workbook."),
-    statementPaths: z.array(z.string()).min(1).describe("Absolute paths to CSV, XLSX/XLS, OFX, or QFX statement files."),
-    outputPath: z.string().describe("Absolute path for the resulting consolidated .xlsx workbook.")
+    templatePath: z.string().describe("Absolute path to the client template workbook. Pass last month's consolidated output to keep a running ledger."),
+    statementPaths: z.array(z.string()).min(1).describe("Absolute paths to statement files, or to folders containing them."),
+    outputPath: z.string().describe("Absolute path for the resulting consolidated .xlsx workbook. Must differ from templatePath to keep the input intact.")
   })
 }, async ({ templatePath, statementPaths, outputPath }) => {
+  const source = resolve(templatePath);
+  const target = resolve(outputPath);
+  if (source === target) throw new Error("outputPath must differ from templatePath so the original workbook is preserved.");
+
   const workbook = new ExcelJS.Workbook();
-  await workbook.xlsx.readFile(resolve(templatePath));
-  const master = getSheet(workbook, "Master Transactions");
-  const rules = readRules(workbook);
-  const reports = readReportSetups(workbook);
-  const exceptions: string[] = [];
+  await workbook.xlsx.readFile(source);
+  const { files, notes } = await expandStatementPaths(statementPaths);
+  const exceptions = [...notes];
+  if (!files.length) throw new Error("No readable statement files were found at the paths given.");
 
-  const existingRows = readMasterRows(master);
-  const seen = new Set(existingRows.map((row) => row.fingerprint).filter(Boolean));
-
-  const parsed: Transaction[] = [];
-  for (const statementPath of statementPaths) {
+  const incoming: Transaction[] = [];
+  for (const file of files) {
     try {
-      parsed.push(...(await parseStructuredFile(resolve(statementPath))).map((row) => applyRules(row, rules)));
+      incoming.push(...await parseStatementFile(file));
     } catch (error) {
       exceptions.push(`Not imported - ${error instanceof Error ? error.message : String(error)}`);
     }
   }
 
-  // Deduplicate within this import as well as against the existing master table.
-  const added: Transaction[] = [];
-  for (const row of parsed) {
-    if (seen.has(row.fingerprint)) continue;
-    seen.add(row.fingerprint);
-    added.push(row);
-    writeMasterRow(master, row);
-  }
-
-  // Reports always describe the whole master table, not just this import.
-  const allRows = [...existingRows, ...added];
-  for (const setup of reports) {
-    const sheet = workbook.getWorksheet(setup.name);
-    if (!sheet) { exceptions.push(`Report "${setup.name}" has no sheet with that name, so it was skipped.`); continue; }
-    if (!setup.show) { exceptions.push(`Report "${setup.name}" is turned off in Report Setup, so it was left unchanged.`); continue; }
-    if (!INCLUDE_FILTERS[setup.includeWhen] || !GROUP_FIELDS[setup.groupBy] || !MEASURES[setup.measure]) {
-      exceptions.push(`Report "${setup.name}" uses a value this version does not understand, so it was skipped. Pick from the dropdowns in Report Setup.`);
-      continue;
-    }
-    buildReport(sheet, setup, allRows);
-  }
-
-  const needsReview = added.filter((row) => row.parseStatus !== "Parsed");
-  needsReview.forEach((row) => exceptions.push(`${row.sourceFile} row ${row.sourceRow}: ${row.parseStatus}`));
-  const uncategorized = added.filter((row) => row.category === "Uncategorized").length;
-
-  writeAudit(getSheet(workbook, "Audit"), [
-    ["Statements requested", statementPaths.length],
-    ["Statements read", statementPaths.length - exceptions.filter((line) => line.startsWith("Not imported")).length],
-    ["Transactions extracted", parsed.length],
-    ["Rows appended", added.length],
-    ["Duplicates skipped", parsed.length - added.length],
-    ["Rows in master table", allRows.length],
-    ["Uncategorized in this import", uncategorized],
-    ["Rows needing review", needsReview.length],
-    ["Active category rules", rules.length]
-  ], exceptions);
-
-  const target = resolve(outputPath);
+  const { summary } = finishImport(workbook, incoming, exceptions, files.length);
   await workbook.xlsx.writeFile(target);
-  const text = [
-    `Created ${target}.`,
-    `Extracted ${parsed.length}; appended ${added.length}; skipped ${parsed.length - added.length} duplicate(s).`,
-    `Master table now holds ${allRows.length} transaction(s). ${uncategorized} uncategorized, ${needsReview.length} needing review.`,
-    exceptions.length ? `${exceptions.length} exception(s) recorded on the Audit sheet. Review it before using the output.` : "No exceptions recorded."
-  ].join(" ");
-  return { content: [{ type: "text", text }] };
+  return { content: [{ type: "text", text: `Created ${target}. Read ${files.length} file(s). ${summary}` }] };
+});
+
+server.registerTool("bank_statement_add_transactions", {
+  description: "Append transactions you extracted yourself, for a scanned or image-only PDF that has no text layer. Rows are marked as assistant-extracted so the audit shows they need verification. Use bank_statement_consolidate first; only fall back to this when the file cannot be machine-parsed.",
+  inputSchema: z.object({
+    templatePath: z.string().describe("Absolute path to the client template workbook."),
+    outputPath: z.string().describe("Absolute path for the resulting workbook."),
+    sourceFile: z.string().describe("Name of the document these rows were read from, recorded on every row."),
+    transactions: z.array(z.object({
+      transactionDate: z.string().describe("Date exactly as printed on the statement."),
+      description: z.string(),
+      debit: z.number().optional().describe("Money out, as a positive number."),
+      credit: z.number().optional().describe("Money in, as a positive number."),
+      currency: z.string().optional(),
+      accountId: z.string().optional().describe("Masked account identifier."),
+      sourceRow: z.string().optional().describe("Page or line reference in the source document.")
+    })).min(1).describe("Only transactions you actually read. Never infer or complete a row you could not see.")
+  })
+}, async ({ templatePath, outputPath, sourceFile, transactions }) => {
+  const source = resolve(templatePath);
+  const target = resolve(outputPath);
+  if (source === target) throw new Error("outputPath must differ from templatePath so the original workbook is preserved.");
+
+  const workbook = new ExcelJS.Workbook();
+  await workbook.xlsx.readFile(source);
+  const incoming = transactions.map((row, index) => {
+    const debit = Math.abs(row.debit ?? 0);
+    const credit = Math.abs(row.credit ?? 0);
+    const partial = {
+      transactionDate: row.transactionDate, description: row.description, debit, credit, amount: credit - debit,
+      currency: row.currency || "Unknown", accountId: row.accountId ?? "", sourceFile,
+      sourceRow: row.sourceRow ?? String(index + 1), category: "Uncategorized", subcategory: "", pnlGroup: "",
+      parseStatus: debit === 0 && credit === 0 ? "Review: no debit or credit value was supplied" : STATUS_ASSISTANT
+    };
+    return { ...partial, fingerprint: fingerprint(partial) };
+  });
+
+  const { summary } = finishImport(workbook, incoming, [], 1);
+  await workbook.xlsx.writeFile(target);
+  return { content: [{ type: "text", text: `Created ${target}. ${summary}` }] };
+});
+
+server.registerTool("bank_statement_update_template", {
+  description: "Change a workbook's category rules and report settings from a request, instead of editing the sheets by hand. Values are validated against the same vocabulary the dropdowns offer; an unrecognised value is rejected rather than written.",
+  inputSchema: z.object({
+    templatePath: z.string().describe("Absolute path to the workbook to change."),
+    outputPath: z.string().optional().describe("Where to write the result. Omit to update the workbook in place."),
+    addRules: z.array(z.object({
+      priority: z.number().optional().describe("Lower numbers win. Defaults to the end of the list."),
+      lookIn: z.enum(["Description", "Amount"]).optional(),
+      matchType: z.enum(["contains", "equals", "starts_with", "regex", "amount_range"]).optional(),
+      match: z.string().describe("Text to look for, or low..high for amount_range."),
+      category: z.string(),
+      subcategory: z.string().optional(),
+      pnlGroup: z.string().optional(),
+      active: z.boolean().optional()
+    })).optional().describe("Category rules to add."),
+    removeRulesMatching: z.array(z.string()).optional().describe("Remove rules whose match text equals one of these, case-insensitively."),
+    updateReports: z.array(z.object({
+      name: z.string().describe("Must equal an existing Report name."),
+      includeWhen: z.enum(["All transactions", "Debit > 0", "Credit > 0", "P&L group is not blank", "Category is not blank"]).optional(),
+      groupBy: z.enum(["Category", "Subcategory", "P&L group", "Currency", "Account ID", "Source file", "Transaction date"]).optional(),
+      measure: z.enum(["Sum of Amount", "Sum of Debit", "Sum of Credit", "Count of transactions"]).optional(),
+      show: z.boolean().optional()
+    })).optional().describe("Report settings to change.")
+  })
+}, async ({ templatePath, outputPath, addRules, removeRulesMatching, updateReports }) => {
+  const source = resolve(templatePath);
+  const target = outputPath ? resolve(outputPath) : source;
+  const workbook = new ExcelJS.Workbook();
+  await workbook.xlsx.readFile(source);
+  const changes: string[] = [];
+
+  const rulesSheet = getSheet(workbook, "Category Rules");
+  if (removeRulesMatching?.length) {
+    const wanted = removeRulesMatching.map((value) => value.trim().toLowerCase());
+    // Collected first, then removed bottom-up, so earlier deletions do not shift later row numbers.
+    const doomed: number[] = [];
+    rulesSheet.eachRow({ includeEmpty: false }, (row, rowNumber) => {
+      if (rowNumber === 1) return;
+      if (wanted.includes(clean(row.getCell(4).value).toLowerCase())) doomed.push(rowNumber);
+    });
+    doomed.reverse().forEach((rowNumber) => rulesSheet.spliceRows(rowNumber, 1));
+    changes.push(doomed.length ? `Removed ${doomed.length} rule(s).` : "No rule matched the text given for removal.");
+  }
+
+  if (addRules?.length) {
+    const existing = sheetRows(rulesSheet);
+    const highest = existing.reduce((max, row) => Math.max(max, Number(row["Priority"]) || 0), 0);
+    addRules.forEach((rule, index) => {
+      if (rule.matchType === "amount_range" && !/^-?[\d.]+\.\.-?[\d.]+$/.test(rule.match.trim())) {
+        throw new Error(`Rule "${rule.match}" uses amount_range, which needs the form low..high, for example 100..500.`);
+      }
+      if (rule.matchType === "regex") { try { new RegExp(rule.match); } catch { throw new Error(`Rule "${rule.match}" is not a valid regular expression.`); } }
+      rulesSheet.addRow([
+        rule.priority ?? highest + (index + 1) * 10,
+        rule.lookIn ?? "Description",
+        rule.matchType ?? "contains",
+        rule.match,
+        rule.category,
+        rule.subcategory ?? "",
+        rule.pnlGroup ?? "",
+        rule.active === false ? "No" : "Yes"
+      ]);
+    });
+    changes.push(`Added ${addRules.length} rule(s).`);
+  }
+
+  if (updateReports?.length) {
+    const reportSheet = getSheet(workbook, "Report Setup");
+    for (const change of updateReports) {
+      let found = false;
+      reportSheet.eachRow({ includeEmpty: false }, (row, rowNumber) => {
+        if (rowNumber === 1 || clean(row.getCell(1).value).toLowerCase() !== change.name.trim().toLowerCase()) return;
+        found = true;
+        if (change.includeWhen) row.getCell(2).value = change.includeWhen;
+        if (change.groupBy) row.getCell(3).value = change.groupBy;
+        if (change.measure) row.getCell(4).value = change.measure;
+        if (change.show !== undefined) row.getCell(5).value = change.show ? "Yes" : "No";
+      });
+      if (!found) throw new Error(`Report Setup has no report named "${change.name}". Existing reports: ${readReportSetups(workbook).map((setup) => setup.name).join(", ")}.`);
+      changes.push(`Updated report "${change.name}".`);
+    }
+  }
+
+  if (!changes.length) return { content: [{ type: "text", text: "Nothing to change. Pass addRules, removeRulesMatching, or updateReports." }] };
+  await workbook.xlsx.writeFile(target);
+  const active = readRules(workbook).length;
+  return { content: [{ type: "text", text: `${changes.join(" ")} Saved ${target}. ${active} active rule(s) now. Re-run bank_statement_consolidate to apply them to existing rows.` }] };
 });
 
 await server.connect(new StdioServerTransport());

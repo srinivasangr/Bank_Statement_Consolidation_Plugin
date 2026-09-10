@@ -11,3 +11,4 @@ tests/output.xlsx
 !assets/BankStatementTemplate.xlsx
 !tests/fixtures/*.csv
 !tests/fixtures/*.ofx
+!tests/fixtures/*.pdf
