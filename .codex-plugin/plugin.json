@@ -1,0 +1,27 @@
+{
+  "name": "bank-statement-consolidator",
+  "version": "0.1.0",
+  "description": "Extract, classify, reconcile, and consolidate bank-statement transactions into a template-driven Excel workbook.",
+  "author": {
+    "name": "Srinivas"
+  },
+  "homepage": "https://github.com/srinivasangr/Bank_Statement_Consolidation_Plugin",
+  "repository": "https://github.com/srinivasangr/Bank_Statement_Consolidation_Plugin",
+  "license": "MIT",
+  "skills": "./skills/",
+  "mcpServers": "./.mcp.json",
+  "interface": {
+    "displayName": "Bank Statement Consolidator",
+    "shortDescription": "Template-driven bank-statement consolidation.",
+    "longDescription": "Processes bank statements locally, applies editable Excel mapping and category rules, reconciles extracted transactions, and creates transaction, debit, P&L, and consolidated reporting views.",
+    "developerName": "Srinivas",
+    "category": "Productivity",
+    "capabilities": ["Read", "Write"],
+    "defaultPrompt": [
+      "Create a template-driven consolidated workbook from these bank statements.",
+      "Validate my workbook rules and extract these statements into the master table.",
+      "Build a reconciled debit, P&L, and consolidated statement report."
+    ],
+    "brandColor": "#0F766E"
+  }
+}

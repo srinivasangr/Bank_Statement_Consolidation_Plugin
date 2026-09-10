@@ -1,0 +1,13 @@
+node_modules/
+dist/
+tests/output.xlsx
+
+# Never commit real financial documents. Test fixtures are allowlisted below.
+*.pdf
+*.csv
+*.ofx
+*.qfx
+*.xlsx
+!assets/BankStatementTemplate.xlsx
+!tests/fixtures/*.csv
+!tests/fixtures/*.ofx

@@ -1,0 +1,11 @@
+{
+  "mcpServers": {
+    "bank_statement_consolidator": {
+      "command": "node",
+      "args": ["./scripts/launch.mjs"],
+      "cwd": ".",
+      "enabled": true,
+      "startup_timeout_sec": 30
+    }
+  }
+}
