@@ -24,29 +24,48 @@ A session looks like this:
 
 ## Install
 
+### From GitHub (what you give other people)
+
+```bash
+codex plugin marketplace add srinivasangr/Bank_Statement_Consolidation_Plugin
+codex plugin add bank-statement-consolidator@bank-statement-tools
+```
+
+Nothing else is needed. `bundle/server.mjs` is committed, so the plugin runs
+without `npm install` and without a build step. Then start a **new Codex thread**.
+
+### From a local checkout (what you use while developing)
+
 Requires Node.js 20 or later.
 
 ```bash
-npm install     # also builds dist/, which the plugin runs
+npm install     # builds dist/ and refreshes bundle/
 ```
 
-Then register and install it with Codex. The plugin folder must sit inside a marketplace root as `<root>/plugins/<plugin-name>`:
+Then register the folder as a local marketplace. The plugin must sit inside the
+marketplace root as `<root>/plugins/<plugin-name>`:
 
 ```bash
-codex plugin marketplace add <root>          # once, for a local marketplace
+codex plugin marketplace add <root>
 codex plugin add bank-statement-consolidator@<marketplace-name>
 codex plugin list                            # confirm: installed, enabled
 ```
 
-Codex copies the whole folder into its plugin cache, `node_modules` and `dist` included, so **run `npm install` before installing the plugin** — otherwise the cached copy has nothing to run. After changing the code, rebuild and re-add the plugin, then start a **new Codex thread** so the updated tools and skill are picked up.
+Codex copies the folder into its plugin cache, so after changing code run
+`npm run build && npm run bundle`, re-run `codex plugin add`, and start a **new
+thread** — tools and skills are read at thread start.
+
+Do not keep both the GitHub and the local install enabled at once; they register
+the same five tool names.
 
 ## Testing without Codex
 
-`npm test` drives the real MCP service over stdio and asserts on the workbooks it produces — 36 checks covering all five tools, all four input formats, rule matching, report contents, duplicate handling, and refusal of bad input. This is the fast loop; use it for anything that isn't about how Codex phrases things.
+`npm test` drives the real MCP service over stdio and asserts on the workbooks it produces — 39 checks covering all five tools, all four input formats, rule matching, report contents, duplicate handling, and refusal of bad input. This is the fast loop; use it for anything that isn't about how Codex phrases things.
 
 ```bash
 npm run check           # typecheck
 npm run build           # compile src/ to dist/
+npm run bundle          # rebuild the committed bundle/server.mjs
 npm test                # end-to-end against the real service
 npm run build:template  # regenerate assets/BankStatementTemplate.xlsx
 npm run verify:template # confirm the shipped template is readable and complete
