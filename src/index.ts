@@ -164,6 +164,21 @@ function normalizeRows(rows: string[][], sourceFile: string, parseStatus: string
   }).filter((row) => row.transactionDate || row.description || row.amount !== 0);
 }
 
+/**
+ * OFX DTPOSTED is YYYYMMDD[HHMMSS], so the date part is unambiguous and safe to
+ * reformat. Dates from CSV, Excel, and PDF are left exactly as the bank wrote
+ * them: 03/04/2026 could be March or April, and guessing is not this tool's job.
+ */
+function ofxDate(value: string): string {
+  const match = value.match(/^(\d{4})(\d{2})(\d{2})/);
+  return match ? `${match[1]}-${match[2]}-${match[3]}` : value;
+}
+
+/** Money is summed in cents-precision to keep totals off floating-point dust. */
+function toCents(value: number): number {
+  return Math.round(value * 100) / 100;
+}
+
 function parseOfx(text: string, sourceFile: string): Transaction[] {
   const accountId = clean(text.match(/<ACCTID>([^<\r\n]+)/i)?.[1]);
   const currency = clean(text.match(/<CURDEF>([^<\r\n]+)/i)?.[1]) || "Unknown";
@@ -173,7 +188,7 @@ function parseOfx(text: string, sourceFile: string): Transaction[] {
     const value = (tag: string) => clean(block.match(new RegExp(`<${tag}>([^<\\r\\n]+)`, "i"))?.[1]);
     const amount = numberValue(value("TRNAMT"));
     const partial = {
-      transactionDate: value("DTPOSTED").slice(0, 8),
+      transactionDate: ofxDate(value("DTPOSTED")),
       description: value("NAME") || value("MEMO"),
       debit: amount < 0 ? Math.abs(amount) : 0,
       credit: amount > 0 ? amount : 0,
@@ -358,7 +373,7 @@ function buildReport(sheet: ExcelJS.Worksheet, setup: ReportSetup, rows: Transac
   const groupBy = GROUP_FIELDS[setup.groupBy];
   const measure = MEASURES[setup.measure];
   const groups = new Map<string, number>();
-  rows.filter(include).forEach((row) => groups.set(groupBy(row), (groups.get(groupBy(row)) ?? 0) + measure(row)));
+  rows.filter(include).forEach((row) => groups.set(groupBy(row), toCents((groups.get(groupBy(row)) ?? 0) + measure(row))));
 
   clearSheet(sheet);
   sheet.addRow([setup.name]).font = { name: "Arial", size: 14, bold: true, color: { argb: "FF12302E" } };
@@ -368,7 +383,7 @@ function buildReport(sheet: ExcelJS.Worksheet, setup: ReportSetup, rows: Transac
   header.font = { name: "Arial", size: 10, bold: true, color: { argb: "FFFFFFFF" } };
   header.fill = { type: "pattern", pattern: "solid", fgColor: { argb: "FF0F766E" } };
   [...groups.entries()].sort(([left], [right]) => left.localeCompare(right)).forEach(([group, value]) => sheet.addRow([group, value]));
-  const total = sheet.addRow(["Total", [...groups.values()].reduce((sum, value) => sum + value, 0)]);
+  const total = sheet.addRow(["Total", toCents([...groups.values()].reduce((sum, value) => sum + value, 0))]);
   total.font = { name: "Arial", size: 10, bold: true };
   total.border = { top: { style: "thin" } };
   sheet.getColumn(1).width = 46;

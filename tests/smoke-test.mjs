@@ -93,6 +93,14 @@ try {
   check(columnValues(master, 3)[pdfRow] === "88.4", `PDF withdrawal column landed in Debit (got ${columnValues(master, 3)[pdfRow]})`);
   check(columnValues(master, 4)[pdfRow] === "0", "PDF balance column was not mistaken for a credit");
 
+  const dates = columnValues(master, 1);
+  check(dates.includes("2026-09-04"), `OFX YYYYMMDD dates are normalised to ISO (got ${dates.filter((d) => d.startsWith("2026-09-0")).join(", ")})`);
+  check(!dates.some((value) => /^\d{8}$/.test(value)), "no raw 8-digit OFX date reaches the master table");
+
+  const debitSheet = workbook.getWorksheet("Debit statement");
+  const debitTotal = debitSheet.getRow(debitSheet.rowCount).getCell(2).value;
+  check(debitTotal === 3011.8, `report totals are rounded to cents, not floating-point dust (got ${debitTotal})`);
+
   const audit = workbook.getWorksheet("Audit");
   const auditText = columnValues(audit, 1).join(" | ");
   check(auditText.includes("Read from PDF text layer"), "audit breaks out how many rows came from a PDF");
