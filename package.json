@@ -11,11 +11,12 @@
   "scripts": {
     "build": "tsc -p tsconfig.json",
     "check": "tsc -p tsconfig.json --noEmit",
-    "prepare": "npm run build",
+    "bundle": "node scripts/bundle.mjs",
+    "prepare": "npm run build && npm run bundle",
     "build:template": "node scripts/build-template.mjs",
     "verify:template": "node scripts/verify-template.mjs",
-    "test": "node tests/smoke-test.mjs",
-    "start": "node dist/index.js"
+    "test": "npm run build && npm run bundle && node tests/smoke-test.mjs",
+    "start": "node bundle/server.mjs"
   },
   "dependencies": {
     "@modelcontextprotocol/server": "^2.0.0",
@@ -26,6 +27,7 @@
   "devDependencies": {
     "@modelcontextprotocol/client": "^2.0.0",
     "@types/node": "^22.0.0",
+    "esbuild": "^0.28.2",
     "typescript": "^5.8.0"
   }
 }

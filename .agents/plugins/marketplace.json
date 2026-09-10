@@ -1,0 +1,20 @@
+{
+  "name": "bank-statement-tools",
+  "interface": {
+    "displayName": "Bank Statement Tools"
+  },
+  "plugins": [
+    {
+      "name": "bank-statement-consolidator",
+      "source": {
+        "source": "local",
+        "path": "."
+      },
+      "policy": {
+        "installation": "AVAILABLE",
+        "authentication": "ON_USE"
+      },
+      "category": "Productivity"
+    }
+  ]
+}

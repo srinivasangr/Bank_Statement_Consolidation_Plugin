@@ -41,7 +41,7 @@ function columnValues(sheet, column) {
 
 const scratch = await mkdtemp(join(tmpdir(), "bank-statement-test-"));
 const client = new Client({ name: "bank-statement-consolidator-smoke-test", version: "0.1.0" });
-const transport = new StdioClientTransport({ command: process.execPath, args: [join(root, "dist", "index.js")], cwd: root, stderr: "inherit" });
+const transport = new StdioClientTransport({ command: process.execPath, args: [join(root, "bundle", "server.mjs")], cwd: root, stderr: "inherit" });
 
 try {
   await client.connect(transport);
