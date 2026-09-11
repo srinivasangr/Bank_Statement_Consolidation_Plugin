@@ -16,7 +16,8 @@
     "build:template": "node scripts/build-template.mjs",
     "verify:template": "node scripts/verify-template.mjs",
     "test": "npm run build && npm run bundle && node tests/smoke-test.mjs",
-    "start": "node bundle/server.mjs"
+    "start": "node bundle/server.mjs",
+    "consolidate": "node scripts/consolidate.mjs"
   },
   "dependencies": {
     "@modelcontextprotocol/server": "^2.0.0",
