@@ -1,0 +1,57 @@
+%PDF-1.4
+1 0 obj
+<< /Type /Catalog /Pages 2 0 R >>
+endobj
+2 0 obj
+<< /Type /Pages /Kids [3 0 R] /Count 1 >>
+endobj
+3 0 obj
+<< /Type /Page /Parent 2 0 R /MediaBox [0 0 700 792] /Resources << /Font << /F1 4 0 R >> >> /Contents 5 0 R >>
+endobj
+4 0 obj
+<< /Type /Font /Subtype /Type1 /BaseFont /Helvetica /Encoding /WinAnsiEncoding >>
+endobj
+5 0 obj
+<< /Length 1199 >>
+stream
+BT /F1 9 Tf 40 700 Td (Statement of account) Tj ET
+BT /F1 9 Tf 40 686 Td (MR EXAMPLE CUSTOMER) Tj ET
+BT /F1 9 Tf 40 660 Td (Date) Tj ET
+BT /F1 9 Tf 144 660 Td (Narration) Tj ET
+BT /F1 9 Tf 284 660 Td (Chq./Ref.No.) Tj ET
+BT /F1 9 Tf 405 660 Td (Withdrawal Amt.) Tj ET
+BT /F1 9 Tf 491 660 Td (Deposit Amt.) Tj ET
+BT /F1 9 Tf 564 660 Td (Closing Balance) Tj ET
+BT /F1 9 Tf 34 640 Td (24/01/26) Tj ET
+BT /F1 9 Tf 68 640 Td (UPI-AMAZON) Tj ET
+BT /F1 9 Tf 293 640 Td (0000123456789) Tj ET
+BT /F1 9 Tf 442 640 Td (1,499.00) Tj ET
+BT /F1 9 Tf 580 640 Td (98,501.00) Tj ET
+BT /F1 9 Tf 68 626 Td (INDIA-AMAZON@RAPL-RATN001RAPL) Tj ET
+BT /F1 9 Tf 34 606 Td (09/02/26) Tj ET
+BT /F1 9 Tf 68 606 Td (ACH C- WIPRO LIMITED) Tj ET
+BT /F1 9 Tf 293 606 Td (0000123456790) Tj ET
+BT /F1 9 Tf 505 606 Td (564.00) Tj ET
+BT /F1 9 Tf 580 606 Td (99,065.00) Tj ET
+BT /F1 9 Tf 34 586 Td (25/02/26) Tj ET
+BT /F1 9 Tf 68 586 Td (POS PURCHASE GROCERY) Tj ET
+BT /F1 9 Tf 293 586 Td (0000123456791) Tj ET
+BT /F1 9 Tf 436 586 Td (12,345.67) Tj ET
+BT /F1 9 Tf 580 586 Td (86,719.33) Tj ET
+BT /F1 9 Tf 40 528 Td (Opening Balance) Tj ET
+BT /F1 9 Tf 40 506 Td (Statement From : 01/01/2026 This is a computer generated statement.) Tj ET
+endstream
+endobj
+xref
+0 6
+0000000000 65535 f 
+0000000009 00000 n 
+0000000058 00000 n 
+0000000115 00000 n 
+0000000241 00000 n 
+0000000338 00000 n 
+trailer
+<< /Size 6 /Root 1 0 R >>
+startxref
+1589
+%%EOF

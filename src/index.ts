@@ -101,6 +101,18 @@ function findColumn(headers: string[], aliases: string[]): number {
   return headers.findIndex((header) => aliases.includes(normalHeader(header)));
 }
 
+/**
+ * Money columns are matched on how the label starts, because banks decorate
+ * them: "Withdrawal Amt.", "Deposit Amt.", "Debit Amount". Prefix matching keeps
+ * those while still ignoring "Closing Balance" and "Running Bal.".
+ */
+function findColumnStartingWith(headers: string[], prefixes: string[]): number {
+  return headers.findIndex((header) => {
+    const normal = normalHeader(header);
+    return prefixes.some((prefix) => normal.startsWith(prefix));
+  });
+}
+
 function csvRows(text: string): string[][] {
   const rows: string[][] = [];
   let row: string[] = [];
@@ -131,9 +143,9 @@ function normalizeRows(rows: string[][], sourceFile: string, parseStatus: string
   const headers = rows[headerAt];
   const dateIndex = findColumn(headers, ["date", "transactiondate", "valuedate", "postingdate"]);
   const descriptionIndex = findColumn(headers, ["description", "narration", "details", "particulars", "memo"]);
-  const debitIndex = findColumn(headers, ["debit", "withdrawal", "withdrawals", "paidout", "moneyout"]);
-  const creditIndex = findColumn(headers, ["credit", "deposit", "deposits", "paidin", "moneyin"]);
-  const amountIndex = findColumn(headers, ["amount", "transactionamount"]);
+  const debitIndex = findColumnStartingWith(headers, ["debit", "withdrawal", "paidout", "moneyout"]);
+  const creditIndex = findColumnStartingWith(headers, ["credit", "deposit", "paidin", "moneyin"]);
+  const amountIndex = findColumnStartingWith(headers, ["amount", "transactionamount"]);
   const currencyIndex = findColumn(headers, ["currency", "curr"]);
   const accountIndex = findColumn(headers, ["accountid", "accountnumber", "account"]);
   if (debitIndex < 0 && creditIndex < 0 && amountIndex < 0) {
@@ -255,7 +267,14 @@ async function parseStatementFile(filePath: string): Promise<ParsedFile> {
     return { transactions: normalizeRows(rows, name, STATUS_PARSED), notes: [] };
   }
   if ([".ofx", ".qfx"].includes(extension)) return { transactions: parseOfx(await readFile(filePath, "utf8"), name), notes: [] };
-  if (extension === ".pdf") return { transactions: normalizeRows((await extractPdfTable(filePath)).rows, name, STATUS_PDF), notes: [] };
+  if (extension === ".pdf") {
+    const extraction = await extractPdfTable(filePath);
+    const transactions = normalizeRows(extraction.rows, name, STATUS_PDF);
+    const notes = extraction.discardedRows > 0
+      ? [`${name}: ${extraction.discardedRows} line(s) below the table header carried no date and were treated as headings, totals, or page furniture rather than transactions.`]
+      : [];
+    return { transactions, notes };
+  }
   throw new Error(`${name}: unsupported file type. Use CSV, XLSX/XLS, OFX/QFX, or PDF.`);
 }
 

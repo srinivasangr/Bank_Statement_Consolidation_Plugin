@@ -60,7 +60,7 @@ the same five tool names.
 
 ## Testing without Codex
 
-`npm test` drives the real MCP service over stdio and asserts on the workbooks it produces — 51 checks covering all five tools, every input format, rule matching, report contents, duplicate handling, and refusal of bad input. This is the fast loop; use it for anything that isn't about how Codex phrases things.
+`npm test` drives the real MCP service over stdio and asserts on the workbooks it produces — 60 checks covering all five tools, every input format, rule matching, report contents, duplicate handling, and refusal of bad input. This is the fast loop; use it for anything that isn't about how Codex phrases things.
 
 ```bash
 npm run check           # typecheck

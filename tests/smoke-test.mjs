@@ -106,6 +106,26 @@ try {
   check(auditText.includes("Read from PDF text layer"), "audit breaks out how many rows came from a PDF");
   check(auditText.includes("reconstructed from a PDF text layer"), "audit warns that PDF rows need checking against statement totals");
 
+  console.log("awkward real-world PDF layout");
+  const hdfcPath = join(scratch, "Hdfc.xlsx");
+  const hdfc = textOf(await client.callTool({
+    name: "bank_statement_consolidate",
+    arguments: { templatePath: shipped, statementPaths: [join(fixtures, "hdfc")], outputPath: hdfcPath }
+  }));
+  check(hdfc.includes("appended 3"), `three transactions from a statement whose date and narration touch (${hdfc})`);
+  const hdfcMaster = (await readWorkbook(hdfcPath)).getWorksheet("Master Transactions");
+  const hdfcDesc = columnValues(hdfcMaster, 2);
+  check(hdfcDesc.some((value) => value.startsWith("UPI-AMAZON")), `the narration is split from the date, not swallowed by it (${hdfcDesc[0]})`);
+  check(hdfcDesc.some((value) => value.includes("RAPL-RATN001RAPL")), "a wrapped narration line is folded into the description");
+  check(!hdfcDesc.some((value) => value.includes("0000123456789")), "the wrapped line does not land in the cheque-number column");
+  check(!hdfcDesc.some((value) => value.includes("Opening Balance")), "a summary line further down the page is not merged into a transaction");
+  check(!hdfcDesc.some((value) => value.includes("computer generated")), "footer text that merely mentions a date is not imported as a transaction");
+  const hdfcDebits = columnValues(hdfcMaster, 3).map(Number);
+  const hdfcCredits = columnValues(hdfcMaster, 4).map(Number);
+  check(hdfcDebits.includes(1499) && hdfcDebits.includes(12345.67), `right-aligned withdrawal amounts land in Debit (${hdfcDebits.join(", ")})`);
+  check(hdfcCredits.includes(564), `a deposit lands in Credit, not Debit (${hdfcCredits.join(", ")})`);
+  check(columnValues((await readWorkbook(hdfcPath)).getWorksheet("Audit"), 1).join(" ").includes("carried no date"), "discarded page furniture is counted on the audit sheet");
+
   console.log("Bank of America business CSV (no header row, sectioned)");
   const boaPath = join(scratch, "Boa.xlsx");
   const boa = textOf(await client.callTool({

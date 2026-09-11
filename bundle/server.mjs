@@ -110753,7 +110753,7 @@ async function readTextItems(filePath) {
     for (const item of content.items) {
       const text = (item.str ?? "").trim();
       if (!text || !item.transform) continue;
-      items.push({ text, x: item.transform[4], y: item.transform[5], page: pageNumber });
+      items.push({ text, x: item.transform[4], y: item.transform[5], width: item.width ?? text.length * 4, page: pageNumber });
     }
     page.cleanup();
   }
@@ -110780,15 +110780,79 @@ function isHeaderLine(line) {
   const words = line.map((item) => normalWord(item.text));
   return words.some((word) => DATE_WORDS.includes(word)) && words.some((word) => DESCRIPTION_WORDS.includes(word));
 }
-function columnize(line, anchors) {
-  const boundaries = anchors.slice(1).map((anchor2, index) => (anchor2 + anchors[index]) / 2);
-  const cells = anchors.map(() => []);
+function columnBoundaries(lines, minGap = 4) {
+  const items = lines.flat();
+  if (!items.length) return [];
+  const maxX = Math.ceil(Math.max(...items.map((item) => item.x + item.width))) + 2;
+  const counts = new Int32Array(maxX + 2);
+  for (const line of lines) {
+    const occupied = new Uint8Array(maxX + 2);
+    for (const item of line) {
+      const from = Math.max(0, Math.floor(item.x));
+      const to = Math.min(maxX, Math.ceil(item.x + item.width));
+      occupied.fill(1, from, to + 1);
+    }
+    for (let x = 0; x <= maxX; x += 1) if (occupied[x]) counts[x] += 1;
+  }
+  const firstX = Math.floor(Math.min(...items.map((item) => item.x)));
+  const boundaries = [];
+  let runStart = -1;
+  for (let x = firstX; x <= maxX; x += 1) {
+    const empty = counts[x] === 0;
+    if (empty && runStart < 0) runStart = x;
+    if (!empty && runStart >= 0) {
+      if (x - runStart >= minGap) boundaries.push((runStart + x - 1) / 2);
+      runStart = -1;
+    }
+  }
+  return boundaries;
+}
+function columnize(line, boundaries) {
+  const cells = Array.from({ length: boundaries.length + 1 }, () => []);
   for (const item of line) {
     let column = 0;
     while (column < boundaries.length && item.x >= boundaries[column]) column += 1;
     cells[column].push(item.text);
   }
   return cells.map((parts) => parts.join(" ").trim());
+}
+function splitLeadingDate(row) {
+  const match = (row[0] ?? "").match(/^(\d{1,2}[/-]\d{1,2}[/-]\d{2,4})\s*(\S.*)$/);
+  if (!match || row.length < 2 || row[1]) return row;
+  const split = [...row];
+  split[0] = match[1];
+  split[1] = match[2];
+  return split;
+}
+var LOOKS_NUMERIC = /^[(-]?[\d,]+\.?\d*\)?$/;
+var LOOKS_LIKE_DATE = /\d{1,4}[/-]\d{1,2}([/-]\d{2,4})?/;
+var IS_ONLY_A_DATE = /^\d{1,4}[/-]\d{1,2}(?:[/-]\d{2,4})?$/;
+function mergeWrappedRows(rows, descriptionColumn, maxGap) {
+  const merged = [];
+  for (const row of rows) {
+    const filled = row.cells.filter(Boolean);
+    const previous = merged[merged.length - 1];
+    const adjacent = previous !== void 0 && previous.page === row.page && previous.y - row.y <= maxGap;
+    const isContinuation = merged.length > 1 && adjacent && filled.length === 1 && !LOOKS_NUMERIC.test(filled[0]) && !LOOKS_LIKE_DATE.test(filled[0]);
+    if (!isContinuation || !previous) {
+      merged.push({ ...row, cells: [...row.cells] });
+      continue;
+    }
+    const target = Math.min(descriptionColumn, previous.cells.length - 1);
+    previous.cells[target] = `${previous.cells[target] ?? ""} ${filled[0]}`.trim();
+  }
+  return merged.map((row) => row.cells);
+}
+function medianLineGap(rows) {
+  const gaps = [];
+  for (let index = 1; index < rows.length; index += 1) {
+    if (rows[index].page !== rows[index - 1].page) continue;
+    const gap = rows[index - 1].y - rows[index].y;
+    if (gap > 0) gaps.push(gap);
+  }
+  if (!gaps.length) return 14;
+  gaps.sort((left, right) => left - right);
+  return gaps[Math.floor(gaps.length / 2)];
 }
 async function extractPdfTable(filePath) {
   const { items, pages } = await withQuietConsole(() => readTextItems(filePath));
@@ -110800,9 +110864,21 @@ async function extractPdfTable(filePath) {
   if (headerAt < 0) {
     throw new Error(`${basename(filePath)}: text was read, but no row with both a date and a description heading was found, so the columns could not be identified.`);
   }
-  const anchors = lines[headerAt].map((item) => item.x);
-  const rows = lines.slice(headerAt).map((line) => columnize(line, anchors)).filter((row) => row.some(Boolean));
-  return { rows, pages, headerFound: true, lineCount: lines.length };
+  const body = lines.slice(headerAt);
+  const header = lines[headerAt];
+  const tabular = body.filter((line) => line.length >= Math.max(3, Math.ceil(header.length / 2)));
+  const gutters = columnBoundaries(tabular.length >= 3 ? tabular : body);
+  const anchors = header.map((item) => item.x);
+  const midpoints = anchors.slice(1).map((anchor2, index) => (anchor2 + anchors[index]) / 2);
+  const boundaries = gutters.length >= midpoints.length ? gutters : midpoints;
+  const placed = body.map((line) => ({ cells: splitLeadingDate(columnize(line, boundaries)), y: line[0].y, page: line[0].page })).filter((row) => row.cells.some(Boolean));
+  const headerRow2 = placed[0]?.cells ?? [];
+  const descriptionColumn = Math.max(1, headerRow2.findIndex((cell) => DESCRIPTION_WORDS.includes(normalWord(cell))));
+  const merged = mergeWrappedRows(placed, descriptionColumn, medianLineGap(placed) * 1.4);
+  const headerCells = merged[0] ?? [];
+  const dateColumn = Math.max(0, headerCells.findIndex((cell) => DATE_WORDS.includes(normalWord(cell))));
+  const kept = merged.filter((row, index) => index === 0 || IS_ONLY_A_DATE.test((row[dateColumn] ?? "").trim()));
+  return { rows: kept, pages, headerFound: true, lineCount: lines.length, discardedRows: merged.length - kept.length };
 }
 
 // src/template.ts
@@ -110998,6 +111074,12 @@ function fingerprint(record2) {
 function findColumn(headers, aliases) {
   return headers.findIndex((header) => aliases.includes(normalHeader(header)));
 }
+function findColumnStartingWith(headers, prefixes) {
+  return headers.findIndex((header) => {
+    const normal = normalHeader(header);
+    return prefixes.some((prefix) => normal.startsWith(prefix));
+  });
+}
 function csvRows(text) {
   const rows = [];
   let row = [];
@@ -111042,9 +111124,9 @@ function normalizeRows(rows, sourceFile, parseStatus) {
   const headers = rows[headerAt];
   const dateIndex = findColumn(headers, ["date", "transactiondate", "valuedate", "postingdate"]);
   const descriptionIndex = findColumn(headers, ["description", "narration", "details", "particulars", "memo"]);
-  const debitIndex = findColumn(headers, ["debit", "withdrawal", "withdrawals", "paidout", "moneyout"]);
-  const creditIndex = findColumn(headers, ["credit", "deposit", "deposits", "paidin", "moneyin"]);
-  const amountIndex = findColumn(headers, ["amount", "transactionamount"]);
+  const debitIndex = findColumnStartingWith(headers, ["debit", "withdrawal", "paidout", "moneyout"]);
+  const creditIndex = findColumnStartingWith(headers, ["credit", "deposit", "paidin", "moneyin"]);
+  const amountIndex = findColumnStartingWith(headers, ["amount", "transactionamount"]);
   const currencyIndex = findColumn(headers, ["currency", "curr"]);
   const accountIndex = findColumn(headers, ["accountid", "accountnumber", "account"]);
   if (debitIndex < 0 && creditIndex < 0 && amountIndex < 0) {
@@ -111150,7 +111232,12 @@ async function parseStatementFile(filePath) {
     return { transactions: normalizeRows(rows, name, STATUS_PARSED), notes: [] };
   }
   if ([".ofx", ".qfx"].includes(extension)) return { transactions: parseOfx(await readFile2(filePath, "utf8"), name), notes: [] };
-  if (extension === ".pdf") return { transactions: normalizeRows((await extractPdfTable(filePath)).rows, name, STATUS_PDF), notes: [] };
+  if (extension === ".pdf") {
+    const extraction = await extractPdfTable(filePath);
+    const transactions = normalizeRows(extraction.rows, name, STATUS_PDF);
+    const notes = extraction.discardedRows > 0 ? [`${name}: ${extraction.discardedRows} line(s) below the table header carried no date and were treated as headings, totals, or page furniture rather than transactions.`] : [];
+    return { transactions, notes };
+  }
   throw new Error(`${name}: unsupported file type. Use CSV, XLSX/XLS, OFX/QFX, or PDF.`);
 }
 async function expandStatementPaths(paths) {
