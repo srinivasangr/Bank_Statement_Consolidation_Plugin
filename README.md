@@ -60,7 +60,7 @@ the same five tool names.
 
 ## Testing without Codex
 
-`npm test` drives the real MCP service over stdio and asserts on the workbooks it produces — 39 checks covering all five tools, all four input formats, rule matching, report contents, duplicate handling, and refusal of bad input. This is the fast loop; use it for anything that isn't about how Codex phrases things.
+`npm test` drives the real MCP service over stdio and asserts on the workbooks it produces — 51 checks covering all five tools, every input format, rule matching, report contents, duplicate handling, and refusal of bad input. This is the fast loop; use it for anything that isn't about how Codex phrases things.
 
 ```bash
 npm run check           # typecheck
@@ -87,10 +87,28 @@ A folder expands to the statement files directly inside it (not subfolders). Rec
 | OFX / QFX | Tagged fields, exact | `Parsed` |
 | CSV | Header matched by name | `Parsed` |
 | XLSX / XLS | First worksheet, header matched by name | `Parsed` |
+| Bank of America business CSV | Sectioned layout with no header row, detected automatically, reconciled against the statement's own Account Summary | `Parsed` |
 | PDF with a text layer | Text positions clustered into rows and columns | `Parsed (PDF text layer)` — verify against statement totals |
 | Scanned / image-only PDF | Not machine-readable. Codex reads it and posts rows via `bank_statement_add_transactions` | `Parsed (assistant-extracted)` — verify every row |
 
 Every row records how it was read, so the Audit sheet can tell you exactly how much of the output is machine-certain. Nothing is silently upgraded from one level to another. **No OCR is bundled** — a scan goes down the assistant-extracted path, or you supply a text export.
+
+### Bank-specific layouts
+
+Most exports are read by matching header names. Some banks do not write headers at all,
+and those need a dedicated reader:
+
+**Bank of America business accounts** put a section label in column 0 — `Deposits and
+other credits`, `Withdrawals and other Debits`, `Service fees`, `Checks` — and no header
+row anywhere. This layout is detected automatically. Because the export also carries an
+`Account Summary` row with the beginning and ending balance, every file is reconciled on
+import: the Audit sheet states whether the transactions account for the stated balance
+change, and quantifies the gap when they do not. Dates in the `Checks` section are
+written `MM/DD` with no year, which is taken from the statement period rather than
+guessed, then checked to fall inside it.
+
+If your bank's export is not recognised, the import fails loudly with the reason rather
+than importing a partial file. Send the column layout and it can be added.
 
 ## Getting the output out
 

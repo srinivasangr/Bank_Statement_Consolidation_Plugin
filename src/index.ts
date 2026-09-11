@@ -6,6 +6,7 @@ import ExcelJS from "exceljs";
 import { McpServer } from "@modelcontextprotocol/server";
 import { StdioServerTransport } from "@modelcontextprotocol/server/stdio";
 import * as z from "zod/v4";
+import { looksLikeBoaBusinessCsv, parseBoaBusinessCsv } from "./boa.js";
 import { extractPdfTable } from "./pdf.js";
 import { createTemplateWorkbook, FINGERPRINT_COLUMN, MASTER_COLUMNS, SHEET_NAMES } from "./template.js";
 
@@ -206,11 +207,43 @@ function parseOfx(text: string, sourceFile: string): Transaction[] {
   });
 }
 
-async function parseStatementFile(filePath: string): Promise<Transaction[]> {
+/** Converts a recognised Bank of America business export into master rows. */
+function fromBoa(rows: string[][], sourceFile: string): ParsedFile {
+  const statement = parseBoaBusinessCsv(rows, sourceFile);
+  const transactions = statement.rows.map((row) => {
+    const partial = {
+      transactionDate: row.transactionDate,
+      description: row.description,
+      debit: Math.max(0, -row.amount),
+      credit: Math.max(0, row.amount),
+      amount: row.amount,
+      // The export states no currency, and this tool does not invent one.
+      currency: "Unknown",
+      accountId: statement.accountId,
+      sourceFile,
+      sourceRow: row.sourceRow,
+      category: "Uncategorized",
+      subcategory: "",
+      pnlGroup: "",
+      parseStatus: row.parseNote || STATUS_PARSED
+    };
+    return { ...partial, fingerprint: fingerprint(partial) };
+  });
+  return { transactions, notes: statement.notes };
+}
+
+type ParsedFile = { transactions: Transaction[]; notes: string[] };
+
+async function parseStatementFile(filePath: string): Promise<ParsedFile> {
   if (!existsSync(filePath)) throw new Error(`File does not exist: ${filePath}`);
   const extension = extname(filePath).toLowerCase();
   const name = basename(filePath);
-  if (extension === ".csv") return normalizeRows(csvRows(await readFile(filePath, "utf8")), name, STATUS_PARSED);
+  if (extension === ".csv") {
+    const rows = csvRows(await readFile(filePath, "utf8"));
+    // Bank-specific layouts are tried before the generic header matcher.
+    if (looksLikeBoaBusinessCsv(rows)) return fromBoa(rows, name);
+    return { transactions: normalizeRows(rows, name, STATUS_PARSED), notes: [] };
+  }
   if ([".xlsx", ".xls"].includes(extension)) {
     const workbook = new ExcelJS.Workbook();
     await workbook.xlsx.readFile(filePath);
@@ -218,10 +251,11 @@ async function parseStatementFile(filePath: string): Promise<Transaction[]> {
     if (!sheet) throw new Error(`${name}: the workbook has no worksheets.`);
     const rows: string[][] = [];
     sheet.eachRow({ includeEmpty: false }, (row) => rows.push(excelRowValues(row)));
-    return normalizeRows(rows, name, STATUS_PARSED);
+    if (looksLikeBoaBusinessCsv(rows)) return fromBoa(rows, name);
+    return { transactions: normalizeRows(rows, name, STATUS_PARSED), notes: [] };
   }
-  if ([".ofx", ".qfx"].includes(extension)) return parseOfx(await readFile(filePath, "utf8"), name);
-  if (extension === ".pdf") return normalizeRows((await extractPdfTable(filePath)).rows, name, STATUS_PDF);
+  if ([".ofx", ".qfx"].includes(extension)) return { transactions: parseOfx(await readFile(filePath, "utf8"), name), notes: [] };
+  if (extension === ".pdf") return { transactions: normalizeRows((await extractPdfTable(filePath)).rows, name, STATUS_PDF), notes: [] };
   throw new Error(`${name}: unsupported file type. Use CSV, XLSX/XLS, OFX/QFX, or PDF.`);
 }
 
@@ -526,7 +560,9 @@ server.registerTool("bank_statement_consolidate", {
   const incoming: Transaction[] = [];
   for (const file of files) {
     try {
-      incoming.push(...await parseStatementFile(file));
+      const parsed = await parseStatementFile(file);
+      incoming.push(...parsed.transactions);
+      exceptions.push(...parsed.notes);
     } catch (error) {
       exceptions.push(`Not imported - ${error instanceof Error ? error.message : String(error)}`);
     }

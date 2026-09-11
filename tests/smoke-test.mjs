@@ -106,6 +106,39 @@ try {
   check(auditText.includes("Read from PDF text layer"), "audit breaks out how many rows came from a PDF");
   check(auditText.includes("reconstructed from a PDF text layer"), "audit warns that PDF rows need checking against statement totals");
 
+  console.log("Bank of America business CSV (no header row, sectioned)");
+  const boaPath = join(scratch, "Boa.xlsx");
+  const boa = textOf(await client.callTool({
+    name: "bank_statement_consolidate",
+    arguments: { templatePath: shipped, statementPaths: [join(fixtures, "boa")], outputPath: boaPath }
+  }));
+  check(boa.includes("appended 6"), `reads a sectioned BOA export with no header row (${boa})`);
+  const boaBook = await readWorkbook(boaPath);
+  const boaMaster = boaBook.getWorksheet("Master Transactions");
+  const boaDates = columnValues(boaMaster, 1);
+  check(boaDates.every((value) => /^\d{4}-\d{2}-\d{2}$/.test(value)), `every BOA date is ISO (${boaDates.join(", ")})`);
+  check(boaDates.includes("2025-01-15"), "a Checks row written as MM/DD takes its year from the statement period");
+  check(columnValues(boaMaster, 7).every((value) => value === "1234 5678 9012"), "account number is read from the Statement Information row");
+  const boaDebits = columnValues(boaMaster, 3).map(Number);
+  const boaCredits = columnValues(boaMaster, 4).map(Number);
+  check(boaCredits.filter((value) => value > 0).length === 2, "the two deposit rows became credits");
+  check(boaDebits.filter((value) => value > 0).length === 4, "withdrawals, the service fee, and the check became debits");
+  check(columnValues(boaMaster, 2).includes("Check 2051"), "a check with no description is labelled by its check number");
+  check(columnValues(boaMaster, 10).includes("Travel"), "BOA rows still run through the category rules");
+  const boaAudit = columnValues(boaBook.getWorksheet("Audit"), 1).join(" | ");
+  check(boaAudit.includes("reconciled."), "a balanced statement is reported as reconciled");
+  check(!boaAudit.includes("Daily Ledger"), "daily balance rows are not imported as transactions");
+
+  console.log("a statement that does not reconcile is called out");
+  const badPath = join(scratch, "BoaBad.xlsx");
+  textOf(await client.callTool({
+    name: "bank_statement_consolidate",
+    arguments: { templatePath: shipped, statementPaths: [join(fixtures, "boa-unbalanced")], outputPath: badPath }
+  }));
+  const badAudit = columnValues((await readWorkbook(badPath)).getWorksheet("Audit"), 1).join(" | ");
+  check(badAudit.includes("DOES NOT RECONCILE"), "a mismatched ending balance is reported, not ignored");
+  check(badAudit.includes("difference 1000.00") || badAudit.includes("difference -1000.00"), `the reconciliation gap is quantified (${badAudit.split("|").find((line) => line.includes("RECONCILE")) ?? ""})`);
+
   console.log("bank_statement_update_template: edit rules by prompt");
   const retunedPath = join(scratch, "Retuned.xlsx");
   const updated = textOf(await client.callTool({

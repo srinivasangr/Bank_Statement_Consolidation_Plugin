@@ -9,6 +9,6 @@ tests/output.xlsx
 *.qfx
 *.xlsx
 !assets/BankStatementTemplate.xlsx
-!tests/fixtures/*.csv
-!tests/fixtures/*.ofx
-!tests/fixtures/*.pdf
+!tests/fixtures/**/*.csv
+!tests/fixtures/**/*.ofx
+!tests/fixtures/**/*.pdf
